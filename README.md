@@ -33,7 +33,9 @@ via `ctypes.WinDLL`. Make sure to use a 64-bit build if you are running a
 
 `src/alpha_zero.py` contains a minimal AlphaZero-inspired MCTS. It expects a
 network that returns a policy over legal moves and a value in [-1, 1] for a
-given position. A small PyTorch network supplies both policy and value heads:
+given position. A small PyTorch network supplies both policy and value heads.
+Positions are encoded as 17 planes for piece locations, side to move, and
+castling rights:
 
 ```bash
 python - <<'PY'

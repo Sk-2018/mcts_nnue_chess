@@ -5,12 +5,20 @@ import torch
 
 from state import State
 
+
 def board_to_tensor(board: chess.Board) -> torch.Tensor:
-    """Encode a board into a flat 768-dimensional tensor."""
-    tensor = torch.zeros(12, 8, 8, dtype=torch.float32)
+    """Encode a board including side to move and castling rights."""
+    tensor = torch.zeros(17, 8, 8, dtype=torch.float32)
     for square, piece in board.piece_map().items():
         idx = piece.piece_type - 1 + (0 if piece.color == chess.WHITE else 6)
         tensor[idx, square // 8, square % 8] = 1.0
+    # Side to move plane
+    tensor[12].fill_(1.0 if board.turn == chess.WHITE else 0.0)
+    # Castling rights
+    tensor[13].fill_(1.0 if board.has_kingside_castling_rights(chess.WHITE) else 0.0)
+    tensor[14].fill_(1.0 if board.has_queenside_castling_rights(chess.WHITE) else 0.0)
+    tensor[15].fill_(1.0 if board.has_kingside_castling_rights(chess.BLACK) else 0.0)
+    tensor[16].fill_(1.0 if board.has_queenside_castling_rights(chess.BLACK) else 0.0)
     return tensor.view(-1)
 
 
@@ -25,7 +33,7 @@ class TinyNetwork(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.body = torch.nn.Sequential(
-            torch.nn.Linear(12 * 64, 128),
+            torch.nn.Linear(17 * 64, 128),
             torch.nn.ReLU(),
         )
         self.policy_head = torch.nn.Linear(128, 64 * 64)
