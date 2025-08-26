@@ -1,9 +1,10 @@
 import math
 from typing import Dict, Tuple
 import chess
+import torch
 
 from state import State
-from mcts import nnue  # reuse NNUE evaluation for value head
+
 
 def _uniform_policy(board: chess.Board) -> Dict[str, float]:
     moves = list(board.legal_moves)
@@ -12,18 +13,35 @@ def _uniform_policy(board: chess.Board) -> Dict[str, float]:
     p = 1.0 / len(moves)
     return {m.uci(): p for m in moves}
 
-class DummyNetwork:
-    """Simple placeholder network using NNUE for value and uniform policy.
 
-    This mimics the AlphaZero interface where ``predict`` returns a policy
-    distribution over legal moves and a value in [-1, 1]. The value is derived
-    from the NNUE centipawn evaluation and clamped to the required range.
-    """
+def board_to_tensor(board: chess.Board) -> torch.Tensor:
+    """Encode a board into a flat 768-dimensional tensor."""
+    tensor = torch.zeros(12, 8, 8, dtype=torch.float32)
+    for square, piece in board.piece_map().items():
+        idx = piece.piece_type - 1 + (0 if piece.color == chess.WHITE else 6)
+        tensor[idx, square // 8, square % 8] = 1.0
+    return tensor.view(-1)
+
+
+class TinyNetwork(torch.nn.Module):
+    """Minimal trainable value network used by AlphaZeroMCTS."""
+
+    def __init__(self):
+        super().__init__()
+        self.model = torch.nn.Sequential(
+            torch.nn.Linear(12 * 64, 128),
+            torch.nn.ReLU(),
+            torch.nn.Linear(128, 1),
+            torch.nn.Tanh(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.model(x)
 
     def predict(self, state: State) -> Tuple[Dict[str, float], float]:
         policy = _uniform_policy(state.board)
-        score = nnue.nnue_evaluate_fen(state.board.fen().encode("utf-8"))
-        value = max(min(score / 1000.0, 1), -1)
+        x = board_to_tensor(state.board).unsqueeze(0)
+        value = self.forward(x).item()
         return policy, value
 
 class AZNode:
@@ -50,7 +68,7 @@ class AZNode:
         )
 
 class AlphaZeroMCTS:
-    def __init__(self, network: DummyNetwork, c_puct: float = 1.0, n_simulations: int = 50):
+    def __init__(self, network: TinyNetwork, c_puct: float = 1.0, n_simulations: int = 50):
         self.network = network
         self.c_puct = c_puct
         self.n_simulations = n_simulations
@@ -91,7 +109,48 @@ class AlphaZeroMCTS:
         best_action, _ = max(self.root.children.items(), key=lambda item: item[1].N)
         return best_action
 
+
+class AlphaZeroTrainer:
+    """Very small self-play reinforcement learning loop."""
+
+    def __init__(self, network: TinyNetwork, lr: float = 1e-3, simulations: int = 25):
+        self.network = network
+        self.optimizer = torch.optim.Adam(network.parameters(), lr=lr)
+        self.searcher = AlphaZeroMCTS(network, n_simulations=simulations)
+        self.loss_fn = torch.nn.MSELoss()
+
+    def self_play(self):
+        state = State()
+        tensors = []
+        players = []
+        while not state.is_terminal():
+            tensors.append(board_to_tensor(state.board))
+            players.append(1 if state.board.turn == chess.WHITE else -1)
+            move = self.searcher.search(state)
+            state = state.take_action(move)
+        result = state.board.result()
+        if result == "1-0":
+            z = 1
+        elif result == "0-1":
+            z = -1
+        else:
+            z = 0
+        targets = torch.tensor([z * p for p in players], dtype=torch.float32)
+        inputs = torch.stack(tensors)
+        return inputs, targets
+
+    def train_step(self) -> float:
+        inputs, targets = self.self_play()
+        self.optimizer.zero_grad()
+        outputs = self.network(inputs).squeeze()
+        loss = self.loss_fn(outputs, targets)
+        loss.backward()
+        self.optimizer.step()
+        return loss.item()
+
+
 if __name__ == "__main__":
-    searcher = AlphaZeroMCTS(DummyNetwork(), n_simulations=10)
-    move = searcher.search(State())
-    print("best move", move)
+    net = TinyNetwork()
+    trainer = AlphaZeroTrainer(net, simulations=5)
+    loss = trainer.train_step()
+    print("training loss", loss)

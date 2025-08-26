@@ -33,19 +33,32 @@ via `ctypes.WinDLL`. Make sure to use a 64-bit build if you are running a
 
 `src/alpha_zero.py` contains a minimal AlphaZero-inspired MCTS. It expects a
 network that returns a policy over legal moves and a value in [-1, 1] for a
-given position. A `DummyNetwork` using the NNUE evaluation for the value head
-and a uniform policy is provided as a placeholder:
+given position. A tiny trainable network using PyTorch now provides the value
+head while keeping a uniform policy for simplicity:
 
 ```bash
 python - <<'PY'
 from state import State
-from alpha_zero import AlphaZeroMCTS, DummyNetwork
+from alpha_zero import AlphaZeroMCTS, TinyNetwork
 
-searcher = AlphaZeroMCTS(DummyNetwork(), n_simulations=10)
+net = TinyNetwork()
+searcher = AlphaZeroMCTS(net, n_simulations=10)
 move = searcher.search(State())
 print(move)
 PY
 ```
 
-This demonstrates the PUCT-based MCTS loop and can be swapped out for a real
-policy/value network trained via self-play.
+This demonstrates the PUCT-based MCTS loop.
+
+### Reinforcement learning
+
+`AlphaZeroTrainer` implements a very small self-play reinforcement learning
+loop that updates the value network from game outcomes. Running the module as a
+script performs one training step and prints the training loss:
+
+```bash
+python src/alpha_zero.py
+```
+
+This is intentionally lightweight and meant for experimentation rather than
+playing strength.
