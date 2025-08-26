@@ -1,6 +1,7 @@
 from __future__ import division
 from __future__ import print_function
-from ctypes import *
+import ctypes
+import sys
 import time
 import math
 import random
@@ -9,7 +10,28 @@ import os
 
 # load NNUE shared library and weights relative to this file
 BASE_DIR = os.path.dirname(__file__)
-nnue = cdll.LoadLibrary(os.path.join(BASE_DIR, "libnnueprobe.so"))
+
+# Determine the correct library extension for the current platform
+if sys.platform.startswith("win"):
+    lib_name = "libnnueprobe.dll"
+    loader = ctypes.WinDLL
+elif sys.platform == "darwin":
+    lib_name = "libnnueprobe.dylib"
+    loader = ctypes.CDLL
+else:
+    lib_name = "libnnueprobe.so"
+    loader = ctypes.CDLL
+
+lib_path = os.path.join(BASE_DIR, lib_name)
+
+try:
+    nnue = loader(lib_path)
+except OSError as e:
+    raise OSError(
+        f"Could not load NNUE library '{lib_name}': {e}. "
+        "Ensure the correct library for your platform is present in the src directory."
+    )
+
 nnue.nnue_init(os.path.join(BASE_DIR, "nn-c3ca321c51c9.nnue").encode("utf-8"))
 
 def randomPolicy(state):
