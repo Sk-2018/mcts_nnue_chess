@@ -5,12 +5,12 @@ import time
 import math
 import random
 import chess
+import os
 
-# load NNUE shared library
-nnue = cdll.LoadLibrary("./libnnueprobe.so")
-
-# load NNUE weights file
-nnue.nnue_init(b"nn-c3ca321c51c9.nnue")
+# load NNUE shared library and weights relative to this file
+BASE_DIR = os.path.dirname(__file__)
+nnue = cdll.LoadLibrary(os.path.join(BASE_DIR, "libnnueprobe.so"))
+nnue.nnue_init(os.path.join(BASE_DIR, "nn-c3ca321c51c9.nnue").encode("utf-8"))
 
 def randomPolicy(state):
     while not state.is_terminal():
@@ -21,8 +21,13 @@ def randomPolicy(state):
         state = state.take_action(action)
     return state.getReward()
 
-# NNUE evalauation
-def nnue_policy(state):    
+# NNUE evaluation
+def nnue_policy(state, learner=None):
+    # try learned value first
+    if learner is not None:
+        val = learner.get_value(state.board.fen())
+        if val is not None:
+            return val
     # case black is checkmated
     if state.board.is_checkmate(): return -10000
     
@@ -159,7 +164,7 @@ class mcts():
                 self.executeRound()
 
         bestChild = self.getBestChild(self.root, 0)
-        return self.getAction(self.root, bestChild), -nnue_policy(bestChild.state)
+        return self.getAction(self.root, bestChild), -self.rollout(bestChild.state)
 
     def executeRound(self):
         node = self.selectNode(self.root)
