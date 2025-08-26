@@ -5,15 +5,6 @@ import torch
 
 from state import State
 
-
-def _uniform_policy(board: chess.Board) -> Dict[str, float]:
-    moves = list(board.legal_moves)
-    if not moves:
-        return {}
-    p = 1.0 / len(moves)
-    return {m.uci(): p for m in moves}
-
-
 def board_to_tensor(board: chess.Board) -> torch.Tensor:
     """Encode a board into a flat 768-dimensional tensor."""
     tensor = torch.zeros(12, 8, 8, dtype=torch.float32)
@@ -23,26 +14,46 @@ def board_to_tensor(board: chess.Board) -> torch.Tensor:
     return tensor.view(-1)
 
 
+def move_to_index(move: chess.Move) -> int:
+    """Map a move to an index in [0, 4095] ignoring promotions."""
+    return move.from_square * 64 + move.to_square
+
+
 class TinyNetwork(torch.nn.Module):
-    """Minimal trainable value network used by AlphaZeroMCTS."""
+    """Minimal policy/value network used by AlphaZeroMCTS."""
 
     def __init__(self):
         super().__init__()
-        self.model = torch.nn.Sequential(
+        self.body = torch.nn.Sequential(
             torch.nn.Linear(12 * 64, 128),
             torch.nn.ReLU(),
+        )
+        self.policy_head = torch.nn.Linear(128, 64 * 64)
+        self.value_head = torch.nn.Sequential(
             torch.nn.Linear(128, 1),
             torch.nn.Tanh(),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.model(x)
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        h = self.body(x)
+        return self.policy_head(h), self.value_head(h)
 
     def predict(self, state: State) -> Tuple[Dict[str, float], float]:
-        policy = _uniform_policy(state.board)
         x = board_to_tensor(state.board).unsqueeze(0)
-        value = self.forward(x).item()
-        return policy, value
+        logits, value = self.forward(x)
+        probs = torch.softmax(logits[0], dim=0)
+        policy: Dict[str, float] = {}
+        for move in state.board.legal_moves:
+            idx = move_to_index(move)
+            policy[move.uci()] = probs[idx].item()
+        total = sum(policy.values())
+        if total > 0:
+            policy = {m: p / total for m, p in policy.items()}
+        else:
+            # fall back to uniform if logits underflow
+            p = 1.0 / len(policy) if policy else 0.0
+            policy = {m: p for m in policy}
+        return policy, value.item()
 
 class AZNode:
     def __init__(self, state: State, parent=None, prior: float = 0.0):
@@ -73,7 +84,7 @@ class AlphaZeroMCTS:
         self.c_puct = c_puct
         self.n_simulations = n_simulations
 
-    def search(self, state: State) -> str:
+    def search(self, state: State) -> Tuple[str, Dict[str, float]]:
         self.root = AZNode(state)
         policy, value = self.network.predict(state)
         self.root.expand(policy)
@@ -107,7 +118,9 @@ class AlphaZeroMCTS:
                 value = -value
 
         best_action, _ = max(self.root.children.items(), key=lambda item: item[1].N)
-        return best_action
+        total = sum(child.N for child in self.root.children.values())
+        pi = {a: child.N / total for a, child in self.root.children.items()} if total > 0 else {}
+        return best_action, pi
 
 
 class AlphaZeroTrainer:
@@ -117,16 +130,21 @@ class AlphaZeroTrainer:
         self.network = network
         self.optimizer = torch.optim.Adam(network.parameters(), lr=lr)
         self.searcher = AlphaZeroMCTS(network, n_simulations=simulations)
-        self.loss_fn = torch.nn.MSELoss()
+        self.value_loss = torch.nn.MSELoss()
 
     def self_play(self):
         state = State()
         tensors = []
         players = []
+        policies = []
         while not state.is_terminal():
             tensors.append(board_to_tensor(state.board))
             players.append(1 if state.board.turn == chess.WHITE else -1)
-            move = self.searcher.search(state)
+            move, pi = self.searcher.search(state)
+            policy_vec = torch.zeros(64 * 64)
+            for m, p in pi.items():
+                policy_vec[move_to_index(chess.Move.from_uci(m))] = p
+            policies.append(policy_vec)
             state = state.take_action(move)
         result = state.board.result()
         if result == "1-0":
@@ -135,15 +153,19 @@ class AlphaZeroTrainer:
             z = -1
         else:
             z = 0
-        targets = torch.tensor([z * p for p in players], dtype=torch.float32)
+        value_targets = torch.tensor([z * p for p in players], dtype=torch.float32)
         inputs = torch.stack(tensors)
-        return inputs, targets
+        policy_targets = torch.stack(policies)
+        return inputs, policy_targets, value_targets
 
     def train_step(self) -> float:
-        inputs, targets = self.self_play()
+        inputs, policy_t, value_t = self.self_play()
         self.optimizer.zero_grad()
-        outputs = self.network(inputs).squeeze()
-        loss = self.loss_fn(outputs, targets)
+        policy_logits, values = self.network(inputs)
+        v_loss = self.value_loss(values.squeeze(), value_t)
+        log_probs = torch.log_softmax(policy_logits, dim=1)
+        p_loss = -(policy_t * log_probs).sum(dim=1).mean()
+        loss = v_loss + p_loss
         loss.backward()
         self.optimizer.step()
         return loss.item()
