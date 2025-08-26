@@ -102,11 +102,11 @@ def uci_loop(state):
                 mcts = MCTS(timeLimit=my_time)
                 best_move, score = mcts.search(state)
 
-            else:          
+            else:
                 # search placeholder for various time controls
                 mcts = MCTS(timeLimit=1000)
-                best_move = mcts.search(state)
-            
+                best_move, score = mcts.search(state)
+
             # return best move to the GUI
             send('info score cp %s' % score)
             send('bestmove %s' % best_move)
