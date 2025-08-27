@@ -241,7 +241,67 @@ class mcts():
                 return action
 
 
+def run_self_learning(games=1, iterations=50):
+    """Run a short self-play training loop using ``self_learning``."""
+    try:
+        from self_learning import SelfLearner, play_game
+    except Exception as e:
+        print(f"Unable to import self_learning: {e}")
+        return
+
+    learner = SelfLearner()
+    for i in range(games):
+        result = play_game(learner, iterations=iterations)
+        print(f"Self-learning game {i+1}: result {result}")
 
 
+def run_alpha_zero(simulations=5):
+    """Execute a single AlphaZero training step."""
+    try:
+        from alpha_zero import TinyNetwork, AlphaZeroTrainer
+    except Exception as e:
+        print(f"Unable to import alpha_zero: {e}")
+        return
+
+    net = TinyNetwork()
+    trainer = AlphaZeroTrainer(net, simulations=simulations)
+    loss = trainer.train_step()
+    print(f"AlphaZero training loss {loss}")
 
 
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Run MCTS helpers including self-learning and AlphaZero demos",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["self", "alpha", "both"],
+        default="both",
+        help="Which helper to run",
+    )
+    parser.add_argument(
+        "--games",
+        type=int,
+        default=1,
+        help="Number of self-play games for self-learning",
+    )
+    parser.add_argument(
+        "--iterations",
+        type=int,
+        default=50,
+        help="MCTS iterations per move during self-learning",
+    )
+    parser.add_argument(
+        "--simulations",
+        type=int,
+        default=5,
+        help="AlphaZero MCTS simulations per move",
+    )
+    args = parser.parse_args()
+
+    if args.mode in ("self", "both"):
+        run_self_learning(args.games, args.iterations)
+    if args.mode in ("alpha", "both"):
+        run_alpha_zero(args.simulations)
